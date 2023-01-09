@@ -32,8 +32,8 @@ def _set_seed(seed, verbose=True):
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
         torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False 
-        if(verbose): print("[INFO] Setting SEED: " + str(seed))   
+        torch.backends.cudnn.benchmark = False
+        if(verbose): print("[INFO] Setting SEED: " + str(seed))
     else:
         if(verbose): print("[INFO] Setting SEED: None")
 
@@ -48,7 +48,7 @@ def feature_evaluation(cl_data_file, model, n_way = 5, n_support = 5, n_query = 
         z_all.append( [ np.squeeze( img_feat[perm_ids[i]]) for i in range(n_support+n_query) ] )     # stack each batch
 
     z_all = torch.from_numpy(np.array(z_all) )
-   
+
     model.n_query = n_query
     if adaptation:
         scores  = model.set_forward_adaptation(z_all, is_feature = True)
@@ -56,7 +56,7 @@ def feature_evaluation(cl_data_file, model, n_way = 5, n_support = 5, n_query = 
         scores, _  = model.set_forward(z_all, is_feature = True)
     pred = scores.data.cpu().numpy().argmax(axis = 1)
     y = np.repeat(range( n_way ), n_query )
-    acc = np.mean(pred == y)*100 
+    acc = np.mean(pred == y)*100
     return acc
 
 
@@ -64,10 +64,10 @@ def single_test(params):
     acc_all = []
 
     iter_num = 600
-    
+
     n_query = max(1, int(16 * params.test_n_way / params.train_n_way))  # if test_n_way is smaller than train_n_way, reduce n_query to keep batch size small
     print("n_query", n_query)
-    few_shot_params = dict(n_way = params.test_n_way , n_support = params.n_shot, n_query=n_query) 
+    few_shot_params = dict(n_way = params.test_n_way , n_support = params.n_shot, n_query=n_query)
 
     if params.dataset in ['omniglot', 'cross_char']:
         assert params.model == 'Conv4' and not params.train_aug ,'omniglot only support Conv4 without augmentation'
@@ -84,11 +84,11 @@ def single_test(params):
     elif params.method == 'matchingnet':
         model           = MatchingNet( model_dict[params.model], **few_shot_params )
     elif params.method in ['relationnet', 'relationnet_softmax']:
-        if params.model == 'Conv4': 
+        if params.model == 'Conv4':
             feature_model = backbone.Conv4NP
-        elif params.model == 'Conv6': 
+        elif params.model == 'Conv6':
             feature_model = backbone.Conv6NP
-        elif params.model == 'Conv4S': 
+        elif params.model == 'Conv4S':
             feature_model = backbone.Conv4SNP
         else:
             feature_model = lambda: model_dict[params.model]( flatten = False )
@@ -100,6 +100,7 @@ def single_test(params):
         backbone.BottleneckBlock.maml = True
         backbone.ResNet.maml = True
         model = MAML(  model_dict[params.model], params=params, approx = (params.method == 'maml_approx') , **few_shot_params )
+        model.n_heads = 5  # TODO zmienić za każdym razem gdy zmieniam głowy w multimamlu
         if params.dataset in ['omniglot', 'cross_char']: #maml use different parameter in omniglot
             model.n_task     = 32
             model.task_update_num = 1
@@ -116,7 +117,7 @@ def single_test(params):
             model.train_lr = 0.1
     else:
        raise ValueError('Unknown method')
-    
+
     few_shot_params["n_query"] = 15
     model = model.cuda()
 
@@ -144,12 +145,12 @@ def single_test(params):
 
     #modelfile   = get_resume_file(checkpoint_dir)
 
-    if not params.method in ['baseline', 'baseline++'] : 
+    if not params.method in ['baseline', 'baseline++'] :
         if params.save_iter != -1:
             modelfile   = get_assigned_file(checkpoint_dir,params.save_iter)
         else:
             modelfile   = get_best_file(checkpoint_dir)
-        
+
         print("Using model file", modelfile)
         if modelfile is not None:
             tmp = torch.load(modelfile)
@@ -169,23 +170,23 @@ def single_test(params):
             if params.dataset in ['omniglot', 'cross_char']:
                 image_size = 28
             else:
-                image_size = 84 
+                image_size = 84
         else:
             image_size = 224
 
         datamgr         = SetDataManager(image_size, n_eposide = iter_num, **few_shot_params)
-        
+
         if params.dataset == 'cross':
             if split == 'base':
-                loadfile = configs.data_dir['miniImagenet'] + 'all.json' 
+                loadfile = configs.data_dir['miniImagenet'] + 'all.json'
             else:
                 loadfile   = configs.data_dir['CUB'] + split +'.json'
         elif params.dataset == 'cross_char':
             if split == 'base':
-                loadfile = configs.data_dir['omniglot'] + 'noLatin.json' 
+                loadfile = configs.data_dir['omniglot'] + 'noLatin.json'
             else:
-                loadfile  = configs.data_dir['emnist'] + split +'.json' 
-        else: 
+                loadfile  = configs.data_dir['emnist'] + split +'.json'
+        else:
             loadfile    = configs.data_dir[params.dataset] + split + '.json'
 
         novel_loader     = datamgr.get_data_loader( loadfile, aug = False)
@@ -215,7 +216,7 @@ def single_test(params):
         print('%d Test Acc = %4.2f%% +- %4.2f%%' %(iter_num, acc_mean, 1.96* acc_std/np.sqrt(iter_num)))
 
     with open('./record/results.txt' , 'a') as f:
-        timestamp = time.strftime("%Y%m%d-%H%M%S", time.localtime()) 
+        timestamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
         aug_str = '-aug' if params.train_aug else ''
         aug_str += '-adapted' if params.adaptation else ''
         if params.method in ['baseline', 'baseline++'] :
@@ -259,7 +260,7 @@ def perform_test(params):
         "n_seeds": repeat
     }
 
-def main():        
+def main():
     params = parse_args('test')
     perform_test(params)
 

@@ -11,7 +11,7 @@ import torch.nn as nn
 from torch.autograd import Variable
 from methods.meta_template import MetaTemplate
 from time import time
-
+import torchvision.transforms as T
 
 
 class MAML(MetaTemplate):
@@ -30,26 +30,19 @@ class MAML(MetaTemplate):
         self.train_lr = 0.01
         self.approx = approx  # first order approx.
 
+        self.n_heads = 5
         self.module_list = nn.ModuleList()
-        # self.module_list = []
-        self.module_list.append(backbone.Linear_fw(self.feat_dim, n_way))
-        self.module_list[0].bias.data.fill_(0)
+        for idx in range(self.n_heads):
+            self.module_list.append(backbone.Linear_fw(self.feat_dim, n_way))
+            self.module_list[idx].bias.data.fill_(idx)
 
-        self.module_list.append(backbone.Linear_fw(self.feat_dim, n_way))
-        self.module_list[1].bias.data.fill_(0)
-
-
-
-        self.only_one_head = True
-
-
-
+        self.changed_heads = 0
         self.current_head_index = 0
         self.prev_acc = 0
 
-        self.first_scales = 0
-        self.second_scales = 0
-
+        self.scales_set = {}
+        for x in range(self.n_heads):
+            self.scales_set["Set " + str(x)] = 0
 
 
     def forward(self, x):
@@ -75,9 +68,6 @@ class MAML(MetaTemplate):
             # fast_parameters = list(self.classifier.parameters())
             # for weight in self.classifier.parameters():
             #     weight.fast = None
-            # if len(self.module_list) < 2:
-            #     self.module_list.append(deepcopy(self.module_list[0]))
-
             fast_parameters = list(self.module_list[self.current_head_index].parameters())
             for weight in self.module_list[self.current_head_index].parameters():
                 weight.fast = None
@@ -130,6 +120,7 @@ class MAML(MetaTemplate):
 
         return loss, task_accuracy
 
+
     def train_loop(self, epoch, train_loader, optimizer):  # overwrite parrent function
         print("Zaczynam się uczyć")
         print_freq = 10
@@ -139,10 +130,6 @@ class MAML(MetaTemplate):
         acc_all = []
         optimizer.zero_grad()
 
-        first = 0
-        second = 0
-        set_scales = 0
-
         # train
         for i, (x, _) in enumerate(train_loader):
             self.n_query = x.size(1) - self.n_support
@@ -151,36 +138,29 @@ class MAML(MetaTemplate):
             loss, task_accuracy = self.set_forward_loss(x)
 
             if task_accuracy < self.prev_acc:
-
-                # if len(self.module_list) < 2:
-                #     self.module_list.append(deepcopy(self.module_list[0]))
-                if self.only_one_head:
-                    self.module_list[1] = deepcopy(self.module_list[0])
-                    self.only_one_head = False
-
-                self.current_head_index = 1 if self.current_head_index == 0 else 0
-
-                loss2, task_accuracy2 = self.set_forward_loss(x)
-
-                if task_accuracy <= task_accuracy2:
-                    print("Zachowałem wagi 2")
-                    loss, task_accuracy = loss2, task_accuracy2
+                if self.n_heads - 1 > self.changed_heads:
+                    self.changed_heads += 1
+                    self.module_list[self.changed_heads] = deepcopy(self.module_list[self.current_head_index])
+                    self.current_head_index = self.changed_heads
                 else:
-                    print("Wagi 1")
-                    self.current_head_index = 1 if self.current_head_index == 0 else 0
+                    for idx in range(self.n_heads):
+                        if idx != self.current_head_index:
+                            prev_index = self.current_head_index
+                            self.current_head_index = idx
+                            loss2, task_accuracy2 = self.set_forward_loss(x)
 
-            if self.current_head_index == 0:
-                self.first_scales += 1
-                first += 1
+                            if task_accuracy < task_accuracy2:
+                                print("Zmieniłem zestaw wag na: " + str(self.current_head_index))
+                                loss, task_accuracy = loss2, task_accuracy2
+                            else:
+                                self.current_head_index = prev_index
+                                print("Zostawiłem zestaw wag na: " + str(self.current_head_index))
 
+                print("Zakończyłem szukanie najlepszych wag")
 
-
-            else:
-                self.second_scales += 1
-                second += 1
+            self.scales_set["Set " + str(self.current_head_index)] += 1
 
             self.prev_acc = task_accuracy
-
 
             avg_loss = avg_loss + loss.item()  # .data[0]
             loss_all.append(loss)
@@ -196,14 +176,6 @@ class MAML(MetaTemplate):
                 task_count = 0
                 loss_all = []
 
-
-                if first > second:
-                    set_scales = 1
-                else:
-                    set_scales = 0
-
-                first = 0
-                second = 0
             optimizer.zero_grad()
             if i % print_freq == 0:
                 print('Epoch {:d} | Batch {:d}/{:d} | Loss {:f}'.format(epoch, i, len(train_loader),
@@ -212,7 +184,8 @@ class MAML(MetaTemplate):
         acc_all = np.asarray(acc_all)
         acc_mean = np.mean(acc_all)
 
-        metrics = {"accuracy/train": acc_mean, "Prev acc": self.prev_acc,'Set of weights': set_scales, "first scales": self.first_scales, "second scales": self.second_scales}
+        metrics = {"accuracy/train": acc_mean, "Prev acc": self.prev_acc}
+        metrics.update(self.scales_set)
 
         return metrics
 
@@ -222,27 +195,27 @@ class MAML(MetaTemplate):
         acc_all = []
         eval_time = 0
         iter_num = len(test_loader)
-
+        print(f"Jest {self.n_heads} zestawów wag")
         for i, (x, _) in enumerate(test_loader):
             self.n_query = x.size(1) - self.n_support
             assert self.n_way == x.size(0), "MAML do not support way change"
             s = time()
 
-            correct_this, count_this = self.correct(x)
+            correct_this, count_this, certainty = self.correct(x)
 
-            if self.only_one_head is False:
-                print("There are 2 heads")
-                self.current_head_index = 1 if self.current_head_index == 0 else 0
-                correct_this2, count_this2 = self.correct(x)
+            for idx in range(self.n_heads):
+                if self.current_head_index != idx:
+                    prev_idx = self.current_head_index
+                    self.current_head_index = idx
+                    correct_this2, count_this2, certainty2 = self.correct(x)
 
-                if correct_this / count_this < correct_this2 / count_this2:
-                    correct_this, count_this = correct_this2, count_this2
-                    print("Using second head")
-                else:
-                    self.current_head_index = 1 if self.current_head_index == 0 else 0
-                    print("Using first head")
-            else:
-                print("Only one head")
+                    if certainty < certainty2:
+                        correct_this, count_this, certainty = correct_this2, count_this2, certainty2
+                        print(f"Zmieniłem zestaw wag na zestaw {self.current_head_index}")
+                    else:
+                        self.current_head_index = prev_idx
+                        print(f"Zostawiłem zestaw wag na zestaw {self.current_head_index}")
+            print("Zakończyłem wybieranie najlepszego zestawu wag")
 
             t = time()
             eval_time += (t - s)
@@ -268,3 +241,19 @@ class MAML(MetaTemplate):
         self.n_query = x.size(1) - self.n_support
         logits = self.set_forward(x)
         return logits
+
+    def correct(self, x):
+        scores = self.set_forward(x)
+        y_query = np.repeat(range( self.n_way ), self.n_query )
+
+        topk_scores, topk_labels = scores.data.topk(1, 1, True, True)
+        topk_ind = topk_labels.cpu().numpy()
+        top1_correct = np.sum(topk_ind[:,0] == y_query)
+
+        # topk_values = topk_scores.sum(dim=0).cpu().numpy()
+        # top1_confidence = topk_scores[:, 0].cpu() / topk_values
+
+        m = torch.nn.Softmax(dim=0)
+        output = float(max(m(topk_scores)))
+
+        return float(top1_correct), len(y_query), output # tutaj zmieniłem
