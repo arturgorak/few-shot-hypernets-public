@@ -253,7 +253,9 @@ class MAML(MetaTemplate):
         # topk_values = topk_scores.sum(dim=0).cpu().numpy()
         # top1_confidence = topk_scores[:, 0].cpu() / topk_values
 
-        m = torch.nn.Softmax(dim=0)
-        output = float(max(m(topk_scores)))
+        m = torch.nn.Softmax(dim=1)
+        soft_scores = m(scores)
+        soft_topk_scores, soft_topk_labels = soft_scores.data.topk(1, 1, True, True)
+        certainty = torch.max(m(soft_topk_scores))
 
-        return float(top1_correct), len(y_query), output # tutaj zmieniłem
+        return float(top1_correct), len(y_query), float(certainty)
